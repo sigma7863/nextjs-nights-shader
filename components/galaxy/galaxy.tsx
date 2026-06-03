@@ -26,6 +26,7 @@ import {
   uniform,
   uv,
   varying,
+  vec2,
   vec3,
   vec4,
 } from 'three/tsl';
@@ -346,6 +347,12 @@ export function Galaxy(): JSX.Element {
     earthNightTex.colorSpace = THREE.SRGBColorSpace;
     earthDayTex.anisotropy = 1;
     earthNightTex.anisotropy = 1;
+    // Hard, blocky pixels: nearest sampling + no mip smoothing on both maps.
+    for (const t of [earthDayTex, earthNightTex]) {
+      t.magFilter = THREE.NearestFilter;
+      t.minFilter = THREE.NearestFilter;
+      t.generateMipmaps = false;
+    }
 
     // Direction from the Earth toward the "sun", in world space. Animated each
     // frame so the day/night terminator sweeps across the globe. The vector
@@ -354,8 +361,13 @@ export function Galaxy(): JSX.Element {
     const sunDir = uniform(new THREE.Vector3(1, 0.15, 0).normalize());
     const earthMat = new THREE.MeshBasicNodeMaterial();
     {
-      const dayColor = tslTexture(earthDayTex, uv());
-      const nightColor = tslTexture(earthNightTex, uv());
+      // Snap UVs to a coarse grid so the planet reads as chunky pixel-art.
+      // Lower the grid resolution for bigger blocks.
+      const pixelGrid = vec2(160, 80);
+      const pixelUv = uv().mul(pixelGrid).floor().add(0.5).div(pixelGrid);
+      const dayColor = tslTexture(earthDayTex, pixelUv);
+      // Night side punched up 2x so city lights glow brighter against space.
+      const nightColor = tslTexture(earthNightTex, pixelUv).mul(2);
       // Lambert term: >0 on the lit hemisphere, <0 on the dark side. Centering
       // the smoothstep on 0 keeps the split a clean half-day / half-night with
       // a soft terminator seam.
@@ -376,7 +388,7 @@ export function Galaxy(): JSX.Element {
     earthMat.depthTest = false;
     earthMat.depthWrite = false;
     const earth = new THREE.Mesh(
-      new THREE.SphereGeometry(40, 64, 48),
+      new THREE.SphereGeometry(80, 64, 48),
       earthMat,
     );
     earth.position.set(-90, 35, -160);
