@@ -252,28 +252,39 @@ const ditherScale = uniform(3.0);
 const ditherExposure = uniform(4.0);
 const ditherStrength = uniform(1.0); // 0 = bypass, 1 = full ordered dither
 
-// ---- Earth uniforms ----
-// `earthPixels` is the horizontal resolution of the UV-snap grid; the vertical
-// grid is derived as half of it to keep the equirectangular 2:1 aspect, so a
-// single slider drives the blockiness. Lower = chunkier pixels.
-const earthPixels = uniform(740);
-// `earthNightBoost` is a flat multiplier on the night map (scales everything,
-// so the brightest city lights grow fastest). `earthNightGamma` reshapes the
-// tone curve before the boost: values < 1 lift the dim/low-brightness base
-// detail disproportionately without blowing out the already-bright lights.
-const earthNightBoost = uniform(0.95);
-const earthNightGamma = uniform(0.59);
-// Clouds: a grayscale cloud map is ordered-dithered into pure white pixels that
-// are mixed over the *day* side only. `earthCloudAmount` biases the dither
-// threshold (higher = more cloud coverage), `earthCloudSpeed` is the slow
-// horizontal UV drift (in UV units/sec) that makes the clouds appear to move.
-const earthCloudAmount = uniform(1);
-const earthCloudSpeed = uniform(0.004);
-// `earthCloudIntensity` scales the cloud base color (1 = pure white, lower =
-// dimmer/grayer clouds). `earthCloudOpacity` controls how much the dithered
-// cloud mask is mixed over the original day texture (0 = invisible, 1 = full).
-const earthCloudIntensity = uniform(1);
-const earthCloudOpacity = uniform(1);
+// ---- Earth controls (single source of truth) ----
+// Every Earth tunable lives here: each entry drives BOTH the shader uniform's
+// initial value and its lil-gui slider (range + label), so there is exactly one
+// place to change a default. See per-field notes below:
+// - pixels:        horizontal resolution of the UV-snap grid (vertical = half
+//                  to keep the 2:1 equirectangular aspect). Lower = chunkier.
+// - nightBoost:    flat multiplier on the night map (scales everything, so the
+//                  brightest city lights grow fastest).
+// - nightGamma:    tone-curve shaper applied before the boost; values < 1 lift
+//                  the dim base detail without blowing out the bright lights.
+// - cloudAmount:   biases the cloud dither threshold (higher = more coverage).
+// - cloudSpeed:    slow horizontal UV drift (UV units/sec) so clouds appear to
+//                  move.
+// - cloudIntensity: scales the cloud base color (1 = pure white, lower = grayer).
+// - cloudOpacity:  how much the dithered cloud mask blends over the day texture
+//                  (0 = invisible, 1 = full).
+const EARTH_CONTROLS = {
+  pixels: { value: 1024, min: 8, max: 1024, step: 1, label: 'pixel resolution' },
+  nightBoost: { value: 0.95, min: 0, max: 6, step: 0.05, label: 'night brightness' },
+  nightGamma: { value: 0.59, min: 0.2, max: 2, step: 0.01, label: 'night shadow lift' },
+  cloudAmount: { value: 1, min: 0, max: 2, step: 0.01, label: 'cloud coverage' },
+  cloudSpeed: { value: 0.002, min: 0, max: 0.05, step: 0.001, label: 'cloud speed' },
+  cloudIntensity: { value: 0.32, min: 0, max: 2, step: 0.01, label: 'clouds intensity' },
+  cloudOpacity: { value: 0.38, min: 0, max: 1, step: 0.01, label: 'clouds opacity' },
+} as const;
+
+const earthPixels = uniform(EARTH_CONTROLS.pixels.value);
+const earthNightBoost = uniform(EARTH_CONTROLS.nightBoost.value);
+const earthNightGamma = uniform(EARTH_CONTROLS.nightGamma.value);
+const earthCloudAmount = uniform(EARTH_CONTROLS.cloudAmount.value);
+const earthCloudSpeed = uniform(EARTH_CONTROLS.cloudSpeed.value);
+const earthCloudIntensity = uniform(EARTH_CONTROLS.cloudIntensity.value);
+const earthCloudOpacity = uniform(EARTH_CONTROLS.cloudOpacity.value);
 
 // Refs exposed by the scene useEffect for the debug GUI to bind against.
 type SceneHandles = {
@@ -1115,27 +1126,19 @@ export function Galaxy(): JSX.Element {
         });
 
       const earthFolder = gui.addFolder('earth');
-      earthFolder
-        .add(earthPixels, 'value', 8, 1024, 1)
-        .name('pixel resolution');
-      earthFolder
-        .add(earthNightBoost, 'value', 0, 6, 0.05)
-        .name('night brightness');
-      earthFolder
-        .add(earthNightGamma, 'value', 0.2, 2, 0.01)
-        .name('night shadow lift');
-      earthFolder
-        .add(earthCloudAmount, 'value', 0, 2, 0.01)
-        .name('cloud coverage');
-      earthFolder
-        .add(earthCloudSpeed, 'value', 0, 0.05, 0.001)
-        .name('cloud speed');
-      earthFolder
-        .add(earthCloudIntensity, 'value', 0, 2, 0.01)
-        .name('clouds intensity');
-      earthFolder
-        .add(earthCloudOpacity, 'value', 0, 1, 0.01)
-        .name('clouds opacity');
+      // Ranges/labels come from EARTH_CONTROLS so the GUI and the uniform
+      // defaults can never drift apart.
+      const addEarth = (
+        u: { value: number },
+        c: { min: number; max: number; step: number; label: string },
+      ) => earthFolder.add(u, 'value', c.min, c.max, c.step).name(c.label);
+      addEarth(earthPixels, EARTH_CONTROLS.pixels);
+      addEarth(earthNightBoost, EARTH_CONTROLS.nightBoost);
+      addEarth(earthNightGamma, EARTH_CONTROLS.nightGamma);
+      addEarth(earthCloudAmount, EARTH_CONTROLS.cloudAmount);
+      addEarth(earthCloudSpeed, EARTH_CONTROLS.cloudSpeed);
+      addEarth(earthCloudIntensity, EARTH_CONTROLS.cloudIntensity);
+      addEarth(earthCloudOpacity, EARTH_CONTROLS.cloudOpacity);
 
       const skyFolder = gui.addFolder('sky');
       skyFolder
