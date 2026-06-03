@@ -366,8 +366,13 @@ export function Galaxy(): JSX.Element {
         1,
       );
     }
-    // Draw the Earth on top of the starfield regardless of depth: disable the
-    // depth test (and depth writes) so it always composites over the stars.
+    // Draw the Earth on top of the starfield regardless of depth. The stars
+    // are additive + transparent, so they render in the transparent pass which
+    // always runs after the opaque pass — an opaque Earth would always be
+    // drawn under them. Flagging the Earth transparent puts it in the same pass
+    // so its higher renderOrder sorts it after the stars, and depthTest off
+    // guarantees it composites on top.
+    earthMat.transparent = true;
     earthMat.depthTest = false;
     earthMat.depthWrite = false;
     const earth = new THREE.Mesh(
