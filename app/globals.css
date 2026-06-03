@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+
+/* Wire the Geist font CSS variables (set on <html> by next/font in layout.tsx)
+   into Tailwind's `font-sans` / `font-mono` utilities. `inline` keeps the
+   var() reference instead of copying its value, so the runtime-injected font
+   variables resolve correctly. */
+@theme inline {
+  --font-sans:
+    var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html,
+body {
+  background: #000;
+  color: #fff;
+  /* The galaxy canvas fades to black at its edges, so the page background
+     must stay black for the blend to be seamless. */
+}
+
+/* Staggered entrance for content rows — paired class + keyframe.
+   `opacity: 0` on the class is what makes the `animation-delay` actually
+   stagger (without it rows would flash visible first); `forwards` keeps the
+   row visible after the animation completes. */
+@keyframes fade-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-slide-up {
+  animation: fade-slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  opacity: 0;
+}
