@@ -344,8 +344,8 @@ export function Galaxy(): JSX.Element {
     const earthNightTex = texLoader.load('/textures/earth_night.jpg');
     earthDayTex.colorSpace = THREE.SRGBColorSpace;
     earthNightTex.colorSpace = THREE.SRGBColorSpace;
-    earthDayTex.anisotropy = 8;
-    earthNightTex.anisotropy = 8;
+    earthDayTex.anisotropy = 1;
+    earthNightTex.anisotropy = 1;
 
     // Direction from the Earth toward the "sun", in world space. Animated each
     // frame so the day/night terminator sweeps across the globe. The vector
@@ -380,7 +380,7 @@ export function Galaxy(): JSX.Element {
       earthMat,
     );
     earth.position.set(-90, 35, -160);
-    earth.renderOrder = 1;
+    earth.renderOrder = 4;
     starsScene.add(earth);
 
     // Shared resolution uniform (device pixels). Updated on resize.
