@@ -251,6 +251,14 @@ const ditherScale = uniform(3.0);
 const ditherExposure = uniform(4.0);
 const ditherStrength = uniform(1.0); // 0 = bypass, 1 = full ordered dither
 
+// ---- Earth uniforms ----
+// `earthPixels` is the horizontal resolution of the UV-snap grid; the vertical
+// grid is derived as half of it to keep the equirectangular 2:1 aspect, so a
+// single slider drives the blockiness. Lower = chunkier pixels. `earthNight
+// Boost` scales the night-map (city lights) brightness.
+const earthPixels = uniform(160);
+const earthNightBoost = uniform(2);
+
 // Refs exposed by the scene useEffect for the debug GUI to bind against.
 type SceneHandles = {
   camera: THREE.PerspectiveCamera;
@@ -362,12 +370,13 @@ export function Galaxy(): JSX.Element {
     const earthMat = new THREE.MeshBasicNodeMaterial();
     {
       // Snap UVs to a coarse grid so the planet reads as chunky pixel-art.
-      // Lower the grid resolution for bigger blocks.
-      const pixelGrid = vec2(160, 80);
+      // Grid resolution is driven by the `earthPixels` uniform (vertical = half
+      // to preserve the 2:1 equirectangular aspect). Lower = bigger blocks.
+      const pixelGrid = vec2(earthPixels, earthPixels.mul(0.5));
       const pixelUv = uv().mul(pixelGrid).floor().add(0.5).div(pixelGrid);
       const dayColor = tslTexture(earthDayTex, pixelUv);
-      // Night side punched up 2x so city lights glow brighter against space.
-      const nightColor = tslTexture(earthNightTex, pixelUv).mul(2);
+      // Night side punched up so city lights glow brighter against space.
+      const nightColor = tslTexture(earthNightTex, pixelUv).mul(earthNightBoost);
       // Lambert term: >0 on the lit hemisphere, <0 on the dark side. Centering
       // the smoothstep on 0 keeps the split a clean half-day / half-night with
       // a soft terminator seam.
@@ -1027,6 +1036,14 @@ export function Galaxy(): JSX.Element {
           scene.camera.updateProjectionMatrix();
           halfFovTan.value = Math.tan((scene.camera.fov * Math.PI) / 180 / 2);
         });
+
+      const earthFolder = gui.addFolder('earth');
+      earthFolder
+        .add(earthPixels, 'value', 8, 1024, 1)
+        .name('pixel resolution');
+      earthFolder
+        .add(earthNightBoost, 'value', 0, 6, 0.05)
+        .name('night brightness');
 
       const skyFolder = gui.addFolder('sky');
       skyFolder

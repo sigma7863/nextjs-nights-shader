@@ -89,11 +89,15 @@ hull.color = Color(0.72, 0.77, 0.83)
 with BuildPart() as wing_b:
     with BuildSketch(Plane.XZ):
         with BuildLine():
+            # Root starts well inboard (negative x) so, after placement, the
+            # wing root buries itself inside the fuselage rather than floating
+            # off the hull surface — the two halves overlap in the body center
+            # and fuse visually into a continuous wing.
             Polyline(
-                (0.34, -0.85),   # root leading edge (x span, z chord)
-                (2.45, 0.35),    # tip leading edge (strongly swept back)
-                (2.45, 0.78),    # tip trailing edge (clipped tip)
-                (0.34, 1.20),    # root trailing edge
+                (-0.30, -0.85),  # root leading edge (x span, z chord)
+                (2.15, 0.35),    # tip leading edge (strongly swept back)
+                (2.15, 0.78),    # tip trailing edge (clipped tip)
+                (-0.30, 1.20),   # root trailing edge
                 close=True,
             )
         make_face()
@@ -109,7 +113,8 @@ base_wing = wing_b.part
 def place_wing(side: int):
     w = base_wing if side > 0 else mirror(base_wing, about=Plane.YZ)
     w = Rot(0, 0, side * -6) * w          # dihedral (tips angle up)
-    w = Pos(side * 0.40, -0.05, -0.05) * w
+    # Small outboard nudge only; the inboard root already overlaps the hull.
+    w = Pos(side * 0.10, -0.05, -0.05) * w
     return w
 
 wings = Compound(children=[place_wing(+1), place_wing(-1)])
