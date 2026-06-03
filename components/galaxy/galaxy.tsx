@@ -254,10 +254,14 @@ const ditherStrength = uniform(1.0); // 0 = bypass, 1 = full ordered dither
 // ---- Earth uniforms ----
 // `earthPixels` is the horizontal resolution of the UV-snap grid; the vertical
 // grid is derived as half of it to keep the equirectangular 2:1 aspect, so a
-// single slider drives the blockiness. Lower = chunkier pixels. `earthNight
-// Boost` scales the night-map (city lights) brightness.
-const earthPixels = uniform(160);
+// single slider drives the blockiness. Lower = chunkier pixels.
+const earthPixels = uniform(533);
+// `earthNightBoost` is a flat multiplier on the night map (scales everything,
+// so the brightest city lights grow fastest). `earthNightGamma` reshapes the
+// tone curve before the boost: values < 1 lift the dim/low-brightness base
+// detail disproportionately without blowing out the already-bright lights.
 const earthNightBoost = uniform(2);
+const earthNightGamma = uniform(1);
 
 // Refs exposed by the scene useEffect for the debug GUI to bind against.
 type SceneHandles = {
@@ -375,15 +379,19 @@ export function Galaxy(): JSX.Element {
       const pixelGrid = vec2(earthPixels, earthPixels.mul(0.5));
       const pixelUv = uv().mul(pixelGrid).floor().add(0.5).div(pixelGrid);
       const dayColor = tslTexture(earthDayTex, pixelUv);
-      // Night side punched up so city lights glow brighter against space.
-      const nightColor = tslTexture(earthNightTex, pixelUv).mul(earthNightBoost);
+      // Night side: first reshape the tone curve with a gamma (exponent < 1
+      // lifts the faint base detail out of the dark), then apply a flat boost
+      // for overall brightness against space.
+      const nightColor = tslTexture(earthNightTex, pixelUv)
+        .rgb.pow(vec3(earthNightGamma))
+        .mul(earthNightBoost);
       // Lambert term: >0 on the lit hemisphere, <0 on the dark side. Centering
       // the smoothstep on 0 keeps the split a clean half-day / half-night with
       // a soft terminator seam.
       const ndl = dot(normalWorld, sunDir);
       const dayAmount = smoothstep(float(-0.18), float(0.18), ndl);
       earthMat.colorNode = vec4(
-        mix(nightColor.rgb, dayColor.rgb, dayAmount),
+        mix(nightColor, dayColor.rgb, dayAmount),
         1,
       );
     }
@@ -1044,6 +1052,9 @@ export function Galaxy(): JSX.Element {
       earthFolder
         .add(earthNightBoost, 'value', 0, 6, 0.05)
         .name('night brightness');
+      earthFolder
+        .add(earthNightGamma, 'value', 0.2, 2, 0.01)
+        .name('night shadow lift');
 
       const skyFolder = gui.addFolder('sky');
       skyFolder
