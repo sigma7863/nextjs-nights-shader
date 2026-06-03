@@ -347,26 +347,35 @@ export function Galaxy(): JSX.Element {
     earthDayTex.anisotropy = 8;
     earthNightTex.anisotropy = 8;
 
+    // Direction from the Earth toward the "sun", in world space. Animated each
+    // frame so the day/night terminator sweeps across the globe. The vector
+    // orbits in the world XZ plane with a slight tilt so the lit hemisphere
+    // reads naturally rather than rolling straight over the poles.
+    const sunDir = uniform(new THREE.Vector3(1, 0.15, 0).normalize());
     const earthMat = new THREE.MeshBasicNodeMaterial();
     {
-      // Direction to the "sun" in world space. Normalized in TSL.
-      const sunDir = vec3(0.6, 0.25, 0.5).normalize();
       const dayColor = tslTexture(earthDayTex, uv());
       const nightColor = tslTexture(earthNightTex, uv());
-      // Lambert term: 1 on the lit hemisphere, <0 on the dark side. Remap with
-      // a soft smoothstep around the terminator for a gentle day/night seam.
+      // Lambert term: >0 on the lit hemisphere, <0 on the dark side. Centering
+      // the smoothstep on 0 keeps the split a clean half-day / half-night with
+      // a soft terminator seam.
       const ndl = dot(normalWorld, sunDir);
-      const dayAmount = smoothstep(float(-0.15), float(0.25), ndl);
+      const dayAmount = smoothstep(float(-0.18), float(0.18), ndl);
       earthMat.colorNode = vec4(
         mix(nightColor.rgb, dayColor.rgb, dayAmount),
         1,
       );
     }
+    // Draw the Earth on top of the starfield regardless of depth: disable the
+    // depth test (and depth writes) so it always composites over the stars.
+    earthMat.depthTest = false;
+    earthMat.depthWrite = false;
     const earth = new THREE.Mesh(
       new THREE.SphereGeometry(40, 64, 48),
       earthMat,
     );
     earth.position.set(-90, 35, -160);
+    earth.renderOrder = 1;
     starsScene.add(earth);
 
     // Shared resolution uniform (device pixels). Updated on resize.
@@ -768,6 +777,14 @@ export function Galaxy(): JSX.Element {
       const elapsedMs = revealStart === null ? 0 : now - revealStart;
 
       uTime.value = now * 0.001;
+
+      // Orbit the sun around the Earth in the world XZ plane (with a small Y
+      // tilt) so the day/night terminator sweeps across the globe as a slow,
+      // realistic rotation — roughly one full cycle per minute.
+      const sunAngle = now * 0.001 * 0.1;
+      sunDir.value
+        .set(Math.cos(sunAngle), 0.15, Math.sin(sunAngle))
+        .normalize();
 
       // bloomStrength fades in linearly on its own clock.
       const tBloom = Math.min(
