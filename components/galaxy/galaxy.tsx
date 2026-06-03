@@ -22,6 +22,7 @@ import {
   screenUV,
   sin,
   smoothstep,
+  step,
   texture as tslTexture,
   uniform,
   uv,
@@ -262,6 +263,12 @@ const earthPixels = uniform(740);
 // detail disproportionately without blowing out the already-bright lights.
 const earthNightBoost = uniform(0.95);
 const earthNightGamma = uniform(0.59);
+// Clouds: a grayscale cloud map is ordered-dithered into pure white pixels that
+// are mixed over the *day* side only. `earthCloudAmount` biases the dither
+// threshold (higher = more cloud coverage), `earthCloudSpeed` is the slow
+// horizontal UV drift (in UV units/sec) that makes the clouds appear to move.
+const earthCloudAmount = uniform(1);
+const earthCloudSpeed = uniform(0.004);
 
 // Refs exposed by the scene useEffect for the debug GUI to bind against.
 type SceneHandles = {
@@ -365,6 +372,37 @@ export function Galaxy(): JSX.Element {
       t.minFilter = THREE.NearestFilter;
       t.generateMipmaps = false;
     }
+    // Grayscale cloud map. Treated as linear (mask data, not color), wraps
+    // horizontally so the time-driven UV drift can scroll seamlessly.
+    const earthCloudTex = texLoader.load('/textures/earth_clouds.jpg');
+    earthCloudTex.anisotropy = 1;
+    earthCloudTex.magFilter = THREE.NearestFilter;
+    earthCloudTex.minFilter = THREE.NearestFilter;
+    earthCloudTex.generateMipmaps = false;
+    earthCloudTex.wrapS = THREE.RepeatWrapping;
+    earthCloudTex.wrapT = THREE.ClampToEdgeWrapping;
+
+    // Ordered Bayer 4x4 matrix as a tiny R8 texture (REPEAT + NEAREST) used to
+    // dither the cloud mask into crisp 1-bit white pixels on the day side.
+    const EARTH_BAYER_4X4 = [
+      0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5,
+    ];
+    const earthBayerBuffer = new Uint8Array(EARTH_BAYER_4X4.length);
+    for (let i = 0; i < EARTH_BAYER_4X4.length; i++) {
+      earthBayerBuffer[i] = Math.round(((EARTH_BAYER_4X4[i] + 0.5) / 16) * 255);
+    }
+    const earthBayerTex = new THREE.DataTexture(
+      earthBayerBuffer,
+      4,
+      4,
+      THREE.RedFormat,
+      THREE.UnsignedByteType,
+    );
+    earthBayerTex.magFilter = THREE.NearestFilter;
+    earthBayerTex.minFilter = THREE.NearestFilter;
+    earthBayerTex.wrapS = THREE.RepeatWrapping;
+    earthBayerTex.wrapT = THREE.RepeatWrapping;
+    earthBayerTex.needsUpdate = true;
 
     // Direction from the Earth toward the "sun", in world space. Animated each
     // frame so the day/night terminator sweeps across the globe. The vector
@@ -377,8 +415,28 @@ export function Galaxy(): JSX.Element {
       // Grid resolution is driven by the `earthPixels` uniform (vertical = half
       // to preserve the 2:1 equirectangular aspect). Lower = bigger blocks.
       const pixelGrid = vec2(earthPixels, earthPixels.mul(0.5));
-      const pixelUv = uv().mul(pixelGrid).floor().add(0.5).div(pixelGrid);
-      const dayColor = tslTexture(earthDayTex, pixelUv);
+      const cell = uv().mul(pixelGrid).floor();
+      const pixelUv = cell.add(0.5).div(pixelGrid);
+      const dayBase = tslTexture(earthDayTex, pixelUv).rgb;
+
+      // ---- Clouds ----
+      // Scroll the cloud UVs horizontally over time, then snap to the same
+      // pixel grid so the clouds share the planet's blocky look.
+      const cloudUv = uv()
+        .add(vec2(uTime.mul(earthCloudSpeed), 0))
+        .mul(pixelGrid)
+        .floor()
+        .add(0.5)
+        .div(pixelGrid);
+      const cloudValue = tslTexture(earthCloudTex, cloudUv).r.mul(earthCloudAmount);
+      // Ordered dither: threshold is sampled from the Bayer matrix indexed by
+      // the *stable* sphere cell (NEAREST+REPEAT auto-tiles the 4x4) so the dot
+      // pattern stays fixed to the globe while the clouds drift across it.
+      const cloudThreshold = tslTexture(earthBayerTex, cell.add(0.5).div(4)).r;
+      const ditheredCloud = step(cloudThreshold, cloudValue);
+      // ditheredTexture mixes the day texture toward white where clouds are.
+      const dayColor = mix(dayBase, vec3(1, 1, 1), ditheredCloud);
+
       // Night side: first reshape the tone curve with a gamma (exponent < 1
       // lifts the faint base detail out of the dark), then apply a flat boost
       // for overall brightness against space.
@@ -390,8 +448,9 @@ export function Galaxy(): JSX.Element {
       // a soft terminator seam.
       const ndl = dot(normalWorld, sunDir);
       const dayAmount = smoothstep(float(-0.18), float(0.18), ndl);
+      // Clouds live only on the day side; the night map is left untouched.
       earthMat.colorNode = vec4(
-        mix(nightColor, dayColor.rgb, dayAmount),
+        mix(nightColor, dayColor, dayAmount),
         1,
       );
     }
@@ -951,6 +1010,8 @@ export function Galaxy(): JSX.Element {
       earthMat.dispose();
       earthDayTex.dispose();
       earthNightTex.dispose();
+      earthCloudTex.dispose();
+      earthBayerTex.dispose();
       ditherMat.dispose();
       bayerTexture.dispose();
       postMats?.brightMat.dispose();
@@ -1055,6 +1116,12 @@ export function Galaxy(): JSX.Element {
       earthFolder
         .add(earthNightGamma, 'value', 0.2, 2, 0.01)
         .name('night shadow lift');
+      earthFolder
+        .add(earthCloudAmount, 'value', 0, 2, 0.01)
+        .name('cloud coverage');
+      earthFolder
+        .add(earthCloudSpeed, 'value', 0, 0.05, 0.001)
+        .name('cloud speed');
 
       const skyFolder = gui.addFolder('sky');
       skyFolder
