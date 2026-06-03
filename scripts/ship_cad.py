@@ -42,6 +42,7 @@ from build123d import (
     fillet,
     loft,
     make_face,
+    mirror,
     scale as b3d_scale,
 )
 
@@ -82,31 +83,36 @@ hull.color = Color(0.72, 0.77, 0.83)
 # Wings: tapered swept delta planform in XZ, extruded for thickness, then
 # given dihedral and mirrored.
 # ----------------------------------------------------------------------------
-def make_wing(side: int):
-    with BuildPart() as wing_b:
-        with BuildSketch(Plane.XZ):
-            with BuildLine():
-                Polyline(
-                    (0.30, -0.55),   # root leading edge (x span, z chord)
-                    (2.25, 0.55),    # tip leading edge (swept back)
-                    (2.25, 1.05),    # tip trailing edge
-                    (0.30, 1.15),    # root trailing edge
-                    close=True,
-                )
-            make_face()
-        extrude(amount=0.07, both=True)
-        try:
-            outer = wing_b.edges().group_by(Axis.X)[-1]
-            chamfer(outer, length=0.04)
-        except Exception:
-            pass
+# Base wing built once on the +X (starboard) side as a swept delta with a
+# clipped tip, then thinned with a tip chamfer. The port wing is a true mirror
+# of it across the YZ plane so both halves are symmetric.
+with BuildPart() as wing_b:
+    with BuildSketch(Plane.XZ):
+        with BuildLine():
+            Polyline(
+                (0.34, -0.85),   # root leading edge (x span, z chord)
+                (2.45, 0.35),    # tip leading edge (strongly swept back)
+                (2.45, 0.78),    # tip trailing edge (clipped tip)
+                (0.34, 1.20),    # root trailing edge
+                close=True,
+            )
+        make_face()
+    extrude(amount=0.06, both=True)
+    try:
+        tip = wing_b.edges().group_by(Axis.X)[-1]
+        chamfer(tip, length=0.035)
+    except Exception:
+        pass
+base_wing = wing_b.part
 
-    w = wing_b.part
-    w = Rot(0, 0, side * -7) * w          # dihedral
-    w = Pos(side * 0.42, -0.04, -0.05) * w
+
+def place_wing(side: int):
+    w = base_wing if side > 0 else mirror(base_wing, about=Plane.YZ)
+    w = Rot(0, 0, side * -6) * w          # dihedral (tips angle up)
+    w = Pos(side * 0.40, -0.05, -0.05) * w
     return w
 
-wings = Compound(children=[make_wing(+1), make_wing(-1)])
+wings = Compound(children=[place_wing(+1), place_wing(-1)])
 wings.label = "wing"
 wings.color = Color(0.60, 0.66, 0.72)
 
@@ -134,30 +140,32 @@ fin.color = Color(0.60, 0.66, 0.72)
 # ----------------------------------------------------------------------------
 with BuildPart() as canopy_b:
     Sphere(0.30)
-canopy = b3d_scale(canopy_b.part, by=(1.0, 0.62, 1.7))
-canopy = Pos(0, 0.22, -0.85) * canopy
+canopy = b3d_scale(canopy_b.part, by=(0.95, 0.66, 1.85))
+canopy = Pos(0, 0.24, -0.80) * canopy
 canopy.label = "canopy"
-canopy.color = Color(0.05, 0.22, 0.38)
+canopy.color = Color(0.10, 0.34, 0.52)
 
 # ----------------------------------------------------------------------------
 # Twin engine nacelles + emissive nozzle cones at the tail.
 # ----------------------------------------------------------------------------
 def make_nacelle(side: int):
+    # Engine housing: a cylinder running along the body axis (+Z is aft).
     with BuildPart() as eng_b:
         Cylinder(
-            radius=0.18,
-            height=0.42,
+            radius=0.21,
+            height=0.78,
             align=(Align.CENTER, Align.CENTER, Align.CENTER),
         )
-    e = Rot(90, 0, 0) * eng_b.part
-    e = Pos(side * 0.26, -0.08, 1.95) * e
+    e = Pos(side * 0.27, -0.06, 1.70) * eng_b.part
     return e
 
 def make_nozzle(side: int):
+    # Exhaust bell: a cone whose wide opening faces aft (+Z). The default cone
+    # has its wide base at -Z, so rotate 180° about X to flare it backward.
     with BuildPart() as noz_b:
-        Cone(bottom_radius=0.15, top_radius=0.05, height=0.34)
-    n = Rot(-90, 0, 0) * noz_b.part
-    n = Pos(side * 0.26, -0.08, 2.22) * n
+        Cone(bottom_radius=0.22, top_radius=0.11, height=0.30)
+    n = Rot(180, 0, 0) * noz_b.part
+    n = Pos(side * 0.27, -0.06, 2.18) * n
     return n
 
 nacelles = Compound(children=[make_nacelle(+1), make_nacelle(-1)])

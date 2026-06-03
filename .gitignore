@@ -27,3 +27,6 @@ yarn-error.log*
 # misc
 .DS_Store
 *.pem
+
+# python CAD toolchain (local-only; used to author public/models/ship.glb)
+.cadenv

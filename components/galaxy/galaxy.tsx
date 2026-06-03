@@ -714,9 +714,10 @@ export function Galaxy(): JSX.Element {
     const PITCH_RATE = 0.9;
     let currentSpeed = flight.baseSpeed;
 
-    // Seed the chase camera behind the ship so frame 1 doesn't snap. Pulled a
-    // little closer on Z and raised on Y so the ship's body reads more clearly.
-    const camOffset = new THREE.Vector3(0, 3.0, 4.3);
+    // Seed the chase camera behind the ship so frame 1 doesn't snap. Raised on
+    // Y and pulled back on Z so the whole hull — including the twin exhaust
+    // bells at the tail — stays comfortably in frame.
+    const camOffset = new THREE.Vector3(0, 2.6, 5.4);
     const tmpVec = new THREE.Vector3();
     ship.root.updateMatrixWorld(true);
     camera.position.copy(ship.root.localToWorld(tmpVec.copy(camOffset)));
