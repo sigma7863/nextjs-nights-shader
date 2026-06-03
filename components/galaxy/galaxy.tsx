@@ -269,6 +269,11 @@ const earthNightGamma = uniform(0.59);
 // horizontal UV drift (in UV units/sec) that makes the clouds appear to move.
 const earthCloudAmount = uniform(1);
 const earthCloudSpeed = uniform(0.004);
+// `earthCloudIntensity` scales the cloud base color (1 = pure white, lower =
+// dimmer/grayer clouds). `earthCloudOpacity` controls how much the dithered
+// cloud mask is mixed over the original day texture (0 = invisible, 1 = full).
+const earthCloudIntensity = uniform(1);
+const earthCloudOpacity = uniform(1);
 
 // Refs exposed by the scene useEffect for the debug GUI to bind against.
 type SceneHandles = {
@@ -433,9 +438,12 @@ export function Galaxy(): JSX.Element {
       // the *stable* sphere cell (NEAREST+REPEAT auto-tiles the 4x4) so the dot
       // pattern stays fixed to the globe while the clouds drift across it.
       const cloudThreshold = tslTexture(earthBayerTex, cell.add(0.5).div(4)).r;
-      const ditheredCloud = step(cloudThreshold, cloudValue);
-      // ditheredTexture mixes the day texture toward white where clouds are.
-      const dayColor = mix(dayBase, vec3(1, 1, 1), ditheredCloud);
+      // Dithered 1-bit mask, then scaled by opacity so the clouds can blend in
+      // partially rather than as hard pure-white pixels.
+      const ditheredCloud = step(cloudThreshold, cloudValue).mul(earthCloudOpacity);
+      // Cloud base color (white scaled by intensity) mixed over the day texture.
+      const cloudColor = vec3(earthCloudIntensity);
+      const dayColor = mix(dayBase, cloudColor, ditheredCloud);
 
       // Night side: first reshape the tone curve with a gamma (exponent < 1
       // lifts the faint base detail out of the dark), then apply a flat boost
@@ -1122,6 +1130,12 @@ export function Galaxy(): JSX.Element {
       earthFolder
         .add(earthCloudSpeed, 'value', 0, 0.05, 0.001)
         .name('cloud speed');
+      earthFolder
+        .add(earthCloudIntensity, 'value', 0, 2, 0.01)
+        .name('clouds intensity');
+      earthFolder
+        .add(earthCloudOpacity, 'value', 0, 1, 0.01)
+        .name('clouds opacity');
 
       const skyFolder = gui.addFolder('sky');
       skyFolder
