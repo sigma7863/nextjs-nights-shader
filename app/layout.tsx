@@ -5,9 +5,9 @@ import { GeistMono } from 'geist/font/mono';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Galaxy Shader',
+  title: 'Starfarer — WebGPU Space Game',
   description:
-    'A WebGPU galaxy shader built with Three.js TSL and Next.js — instanced billboard stars, a hover fluid, bloom, dithering, and a logo-mask reveal.',
+    'A WebGPU space game built with Three.js TSL and Next.js — fly a procedural ship through an infinite, procedurally generated starfield rendered to a background FBO, with bloom and dithering.',
 };
 
 export default function RootLayout({
