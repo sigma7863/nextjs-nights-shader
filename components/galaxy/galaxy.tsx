@@ -3,8 +3,8 @@
 import { useEffect, useRef, type JSX } from 'react';
 import * as THREE from 'three/webgpu';
 // Type-only import — erased at compile time so the lil-gui package never
-// enters the production runtime bundle. The actual module is loaded via
-// dynamic import() inside the debug useEffect, which is gated on `?debug`.
+// enters the initial page chunk. The actual module is loaded via the
+// dynamic import() inside the debug useEffect (a separate lazy chunk).
 import type GUIType from 'lil-gui';
 import {
   attribute,
@@ -285,7 +285,7 @@ const BLOOM_REVEAL_DELAY_MS = 1000;
 // users would see the animation skip its opening.
 const REVEAL_WARMUP_FRAMES = 2;
 const revealTargets = {
-  logoMinMul: 0.06,
+  logoMinMul: 0.17,
   logoMaxMul: 7.0,
   logoWhiteStrength: 1.0,
   bloomStrength: 0.2,
@@ -327,33 +327,18 @@ const ditherStrength = uniform(1.0); // 0 = bypass, 1 = full ordered dither
 // SVG ends up exactly where the page lays out the slot.
 const logoCenter = uniform(new THREE.Vector2(0.5, 0.5));
 const logoSize = uniform(new THREE.Vector2(1, 1));
-// Edge fade — measured in "distance from the active edge" (0..1). Pixels
-// farther from the edge than `start` are untouched (factor=1); pixels
-// closer than `end` are pure black (factor=0); smooth in between. Naming
-// kept as `bottomFade*` because the mobile case (the only one that
-// actually scrolls) still fades against the bottom edge.
-const bottomFadeStart = uniform(0.4);
-const bottomFadeEnd = uniform(0.0);
-// Pow applied to the bottom (mobile) fade curve. Hardcoded to a gamma-ish
-// 1/2.2 — mobile keeps the original feel; desktop gets its own pow slider
-// via `rightFadePow` below.
-const BOTTOM_FADE_POW = 1 / 2.2;
-// Desktop fade parameters — independent from the bottom fade so the
-// right-edge feathering on desktop can be tuned on its own (distance from
-// the right edge, falloff curve).
-const rightFadeStart = uniform(0.555);
-const rightFadeEnd = uniform(0.29);
-const rightFadePow = uniform(4);
-// Floor of the desktop fade: instead of fading all the way to pure black,
-// the dimmest pixel reaches this multiplier. Mobile always fades to 0
-// (pure black); desktop preserves a residual brightness so the right
-// edge stays visible against the page background.
-const rightFadeMin = uniform(0.2);
-// Selects which axis the fade rides: 0 = fade against the bottom edge
-// (mobile), 1 = fade against the right edge (desktop). Driven by the
-// resize handler based on the same 740px breakpoint the page layout uses.
-const fadeAxisIsRight = uniform(0);
-const DESKTOP_BREAKPOINT_PX = 740;
+// Intrinsic aspect ratio (width / height) of the logo SVG, parsed once from
+// its width/height attributes. The texture is a square *stretch* of the SVG
+// (see rasterize-svg-to-texture.ts), so the on-screen sampling rect must use
+// this aspect to undo the stretch and reproduce the mark at true proportions.
+const LOGO_ASPECT = ((): number => {
+  const w = Number(rgbLogoSvgString.match(/width="(\d+(?:\.\d+)?)"/)?.[1]);
+  const h = Number(rgbLogoSvgString.match(/height="(\d+(?:\.\d+)?)"/)?.[1]);
+  return w && h ? w / h : 1;
+})();
+// Fraction of the contained fit the logo actually occupies. <1 leaves a margin
+// so the mark (plus its bloom) doesn't run edge-to-edge. Tweak to taste.
+const LOGO_CONTAIN_SCALE = 0.7;
 
 // Refs exposed by the scene useEffect for the debug GUI to bind against.
 type SceneHandles = {
@@ -461,8 +446,6 @@ export function Galaxy(): JSX.Element {
       container.clientHeight > 0
         ? container.clientWidth / container.clientHeight
         : 1;
-    fadeAxisIsRight.value =
-      container.clientWidth >= DESKTOP_BREAKPOINT_PX ? 1 : 0;
 
     // ---- Sky stars — instanced billboard quads ----
     // A single 1×1 plane geometry rendered N times via InstancedBufferGeometry.
@@ -675,8 +658,8 @@ export function Galaxy(): JSX.Element {
     scene.add(sky);
 
     // Publish handles for the debug useEffect. Set synchronously so it can
-    // wire camera/sky controls as soon as `?debug` triggers the dynamic
-    // import — well before the async logo/init promise resolves.
+    // wire camera/sky controls as soon as the lil-gui dynamic import
+    // resolves — well before the async logo/init promise resolves.
     const hoverDebug: { mode: DebugView } = { mode: 'off' };
     sceneRef.current = { camera, sky, params, regenerateSky, hoverDebug };
 
@@ -747,15 +730,26 @@ export function Galaxy(): JSX.Element {
       const containerH = container.clientHeight;
 
       if (!placeholder) {
-        // Defensive fallback: centered fullscreen "contain" mapping, no
-        // camera offset. Preserves the old behavior if the page ever
-        // forgets the placeholder.
+        // No DOM target (the page renders only the shader): center the logo
+        // and "contain"-fit it using the SVG's *intrinsic* aspect ratio.
+        // Largest rect with aspect LOGO_ASPECT that fits inside the canvas,
+        // expressed as a fraction (logoSize) of the canvas in each axis.
+        const containerAspect = containerW / containerH;
+        let sx: number;
+        let sy: number;
+        if (containerAspect > LOGO_ASPECT) {
+          // Canvas wider than the logo → height-constrained: fill the height,
+          // narrow the width to keep the mark's proportions.
+          sy = 1;
+          sx = LOGO_ASPECT / containerAspect;
+        } else {
+          // Canvas taller/narrower → width-constrained.
+          sx = 1;
+          sy = containerAspect / LOGO_ASPECT;
+        }
         logoCenter.value.set(0.5, 0.5);
-        const aspect = containerW / containerH;
-        logoSize.value.set(
-          aspect >= 1 ? 1 / aspect : 1,
-          aspect >= 1 ? 1 : aspect,
-        );
+        logoSize.value.set(sx * LOGO_CONTAIN_SCALE, sy * LOGO_CONTAIN_SCALE);
+        // Centered mark → natural on-axis projection (no off-axis offset).
         camera.clearViewOffset();
         return;
       }
@@ -1204,39 +1198,10 @@ export function Galaxy(): JSX.Element {
       blurVMat.colorNode = buildBlurColor(blurHRT.texture, texelV);
 
       // Composite: pass 1 (masked scene) is the base; pass 2 (bloom) just
-      // adds an accent. Multiply by a vertical falloff so the bottom edge
-      // fades to pure black (lets the canvas blend into the page beneath).
-      // In this compose quad uv.y=0 is at the top, so flip with oneMinus()
-      // to get a coordinate measured from the bottom upward.
+      // adds an accent.
       const composeMat = new THREE.NodeMaterial();
       const maskedRGB = tslTexture(maskedRT.texture, uv()).rgb;
       const bloomRGB = tslTexture(blurVRT.texture, uv()).rgb;
-      // Pick the fade axis AND its tuning params: bottom (uv.y) on mobile,
-      // right (uv.x) on desktop. `fadeAxisIsRight` is a 0/1 uniform driven
-      // from the resize handler — mixing between the two sets avoids a
-      // shader recompile when the breakpoint flips at runtime.
-      const fadeCoord = mix(uv().y, uv().x, fadeAxisIsRight);
-      const distFromEdge = fadeCoord.oneMinus();
-      const fadeStart = mix(bottomFadeStart, rightFadeStart, fadeAxisIsRight);
-      const fadeEnd = mix(bottomFadeEnd, rightFadeEnd, fadeAxisIsRight);
-      const fadePow = mix(
-        float(BOTTOM_FADE_POW),
-        rightFadePow,
-        fadeAxisIsRight,
-      );
-      // Linear remap of distFromEdge from [end, start] → [0, 1], clamped;
-      // the pow() afterwards shapes the falloff curve.
-      const fadeLinear = distFromEdge
-        .sub(fadeEnd)
-        .div(fadeStart.sub(fadeEnd))
-        .clamp(0, 1);
-      const bottomFade = fadeLinear.pow(fadePow);
-      // Remap the fade so desktop never reaches pure black: the multiplier
-      // floor is 0 on mobile, `rightFadeMin` on desktop. fadeFloor=0 →
-      // identity; fadeFloor=0.4 → bottomFade=0 maps to 0.4, bottomFade=1
-      // still maps to 1.
-      const fadeFloor = mix(float(0), rightFadeMin, fadeAxisIsRight);
-      const remappedFade = mix(fadeFloor, float(1), bottomFade);
       // Scroll-driven dim toward black. Pairs with `logoInfluence` which
       // fades the logo mask: as the user scrolls past the logo into the
       // main content (mostly visible on mobile, where the layout stacks
@@ -1244,9 +1209,7 @@ export function Galaxy(): JSX.Element {
       // scroll=0 `starsScrollDim` is 0 → `mix` returns the final color
       // unchanged. At full scroll it reaches STARS_SCROLL_FADE_MAX (=0.5)
       // → the result is half-mixed with black, i.e. 50% brightness.
-      const finalRGB = maskedRGB
-        .add(bloomRGB.mul(bloomStrength))
-        .mul(remappedFade);
+      const finalRGB = maskedRGB.add(bloomRGB.mul(bloomStrength));
       composeMat.colorNode = vec4(mix(finalRGB, vec3(0), starsScrollDim), 1);
 
       const maskQuad = new THREE.QuadMesh(maskMat);
@@ -1266,7 +1229,6 @@ export function Galaxy(): JSX.Element {
       const h = container.clientHeight;
       camera.aspect = w / h;
       hoverAspect.value = h > 0 ? w / h : 1;
-      fadeAxisIsRight.value = w >= DESKTOP_BREAKPOINT_PX ? 1 : 0;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h);
       sceneRT.setSize(fullW(), fullH());
@@ -1328,12 +1290,12 @@ export function Galaxy(): JSX.Element {
     };
   }, []);
 
-  // Debug GUI — only loaded when the URL contains `?debug`. The dynamic
-  // import keeps lil-gui out of the default page chunk; users without the
-  // query string never download it.
+  // Debug GUI — always present but collapsed by default. The dynamic import
+  // keeps lil-gui out of the initial page chunk (it loads as a separate lazy
+  // chunk), then `gui.close()` renders it as just the "galaxy" title bar in
+  // the corner; click to expand the controls.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if (!new URLSearchParams(window.location.search).has('debug')) return;
 
     let gui: GUIType | null = null;
     let cancelled = false;
@@ -1341,6 +1303,8 @@ export function Galaxy(): JSX.Element {
     void import('lil-gui').then(({ default: GUI }) => {
       if (cancelled) return;
       gui = new GUI({ title: 'galaxy' });
+      // Start collapsed so the panel doesn't obscure the fullscreen shader.
+      gui.close();
 
       const bloomFolder = gui.addFolder('bloom');
       bloomFolder.add(bloomThreshold, 'value', 0, 2, 0.01).name('threshold');
@@ -1348,28 +1312,6 @@ export function Galaxy(): JSX.Element {
       bloomFolder
         .add(revealTargets, 'bloomStrength', 0, 10, 0.05)
         .name('strength');
-
-      const fadeFolder = gui.addFolder('bottom fade');
-      fadeFolder
-        .add(bottomFadeStart, 'value', 0, 1, 0.005)
-        .name('start (from bottom)');
-      fadeFolder
-        .add(bottomFadeEnd, 'value', 0, 1, 0.005)
-        .name('end (from bottom)');
-
-      const desktopFadeFolder = gui.addFolder('desktop fade');
-      desktopFadeFolder
-        .add(rightFadeStart, 'value', 0, 1, 0.005)
-        .name('start (from right)');
-      desktopFadeFolder
-        .add(rightFadeEnd, 'value', 0, 1, 0.005)
-        .name('end (from right)');
-      desktopFadeFolder
-        .add(rightFadePow, 'value', 0.1, 4, 0.01)
-        .name('pow (falloff)');
-      desktopFadeFolder
-        .add(rightFadeMin, 'value', 0, 1, 0.01)
-        .name('min (floor)');
 
       const ditherFolder = gui.addFolder('dither');
       ditherFolder.add(ditherStrength, 'value', 0, 1, 0.01).name('strength');
