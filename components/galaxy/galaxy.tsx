@@ -255,13 +255,13 @@ const ditherStrength = uniform(1.0); // 0 = bypass, 1 = full ordered dither
 // `earthPixels` is the horizontal resolution of the UV-snap grid; the vertical
 // grid is derived as half of it to keep the equirectangular 2:1 aspect, so a
 // single slider drives the blockiness. Lower = chunkier pixels.
-const earthPixels = uniform(533);
+const earthPixels = uniform(740);
 // `earthNightBoost` is a flat multiplier on the night map (scales everything,
 // so the brightest city lights grow fastest). `earthNightGamma` reshapes the
 // tone curve before the boost: values < 1 lift the dim/low-brightness base
 // detail disproportionately without blowing out the already-bright lights.
-const earthNightBoost = uniform(2);
-const earthNightGamma = uniform(1);
+const earthNightBoost = uniform(0.95);
+const earthNightGamma = uniform(0.59);
 
 // Refs exposed by the scene useEffect for the debug GUI to bind against.
 type SceneHandles = {
