@@ -15,7 +15,7 @@ export default function Page(): JSX.Element {
         </p>
       </div>
 
-      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-10 flex flex-wrap items-center gap-x-4 gap-y-1 p-5 font-mono text-xs text-white/60">
+      <div className="pointer-events-none fixed bottom-0 left-0 z-10 flex flex-wrap items-center gap-x-4 gap-y-1 p-5 font-mono text-xs text-white/60">
         <span>
           <kbd className="text-white/90">{'\u2191 \u2193'}</kbd> pitch
         </span>
@@ -25,6 +25,18 @@ export default function Page(): JSX.Element {
         <span>
           <kbd className="text-white/90">Space</kbd> boost
         </span>
+      </div>
+
+      <div className="pointer-events-none fixed bottom-0 right-0 z-10 p-5 text-right font-mono text-[10px] leading-relaxed text-white/40">
+        Earth textures by{' '}
+        <a
+          href="https://www.solarsystemscope.com/textures/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="pointer-events-auto text-white/60 underline underline-offset-2 transition-colors hover:text-white/90"
+        >
+          Solar System Scope
+        </a>
       </div>
     </main>
   );

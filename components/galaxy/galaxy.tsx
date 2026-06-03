@@ -9,22 +9,23 @@ import type GUIType from 'lil-gui';
 import {
   attribute,
   cameraProjectionMatrix,
-  exp,
+  dot,
   float,
   int,
   length,
   mix,
   modelViewMatrix,
   mx_fractal_noise_float,
+  normalWorld,
   positionLocal,
   screenDPR,
   screenUV,
   sin,
+  smoothstep,
   texture as tslTexture,
   uniform,
   uv,
   varying,
-  vec2,
   vec3,
   vec4,
 } from 'three/tsl';
@@ -45,10 +46,10 @@ type SkyParams = {
 };
 
 const DEFAULT_PARAMS: SkyParams = {
-  bandCount: 70_000,
+  bandCount: 11_000,
   fieldCount: 6_000,
   sphereRadius: 300,
-  bandThickness: 0.07,
+  bandThickness: 0.17,
   brightFraction: 0.1,
   band2Offset: -0.175,
 };
@@ -217,39 +218,8 @@ const clusterStrength2 = uniform(0.83);
 // Multiplies brightness ONLY for field stars (aInstanceFlag = 0). Band
 // stars (aInstanceFlag = 1) are unaffected. 1 = current behavior, 0 =
 // field stars fully hidden, >1 = boosted.
-const fieldStrength = uniform(0.8);
-// ---- Hover/density highlight system ----
-// Mouse hover writes into two low-res buffers per frame:
-//   - density: a scalar field splatted with a gaussian at the cursor
-//   - velocity: a vec2 field splatted with mouse delta per frame
-// The density update samples its previous frame at `uv - velocity * dt`
-// (semi-Lagrangian advection), decays, then adds the new splat. The
-// density texture is sampled in the star vertex shader at each star's
-// projected screen UV — non-zero density boosts brightness.
-// Hover sim runs at this fraction of the canvas device-pixel resolution.
-const HOVER_DPR = 0.5;
-type DebugView =
-  | 'off'
-  | 'density'
-  | 'densityCopy'
-  | 'velocity'
-  | 'velocityCopy';
-const mousePos = uniform(new THREE.Vector2(-1, -1)); // UV; -1 = off-screen / no splat
-const mouseVel = uniform(new THREE.Vector2(0, 0));
-const splatRadius = uniform(0.08); // gaussian sigma in UV space
-const splatStrength = uniform(20);
-const densityDecay = uniform(0.985);
-// Lower velocity magnitudes + small advection step keep the wake sub-pixel
-// per frame. Large steps sample outside the splat where the field is ~0, so
-// linear filtering rapidly dilutes the field even with decay near 1.
-const velocitySplatStrength = uniform(2.0);
-const velocityDecay = uniform(0.99);
-const advectionStrength = uniform(0.05);
-const hoverStrength = uniform(1.0);
-// Canvas aspect (width/height). Applied to the splat-distance x-axis so a
-// circular splat stays circular on non-square canvases.
-const hoverAspect = uniform(1.0);
-// Twinkle — only the ~10% of stars flagged via aInstanceBlink respond.
+  const fieldStrength = uniform(0.8);
+  // Twinkle — only the ~10% of stars flagged via aInstanceBlink respond.
 // `strength` is the max brightness reduction at the noise trough; `speed`
 // drifts each star's noise sample point through time. Deliberately gentle
 // defaults so the effect reads as subtle blinking, not jitter.
@@ -285,10 +255,9 @@ type SceneHandles = {
   camera: THREE.PerspectiveCamera;
   sky: THREE.Mesh;
   params: SkyParams;
-  regenerateSky: () => void;
-  hoverDebug: { mode: DebugView };
-  flight: { baseSpeed: number; boostSpeed: number };
-};
+    regenerateSky: () => void;
+    flight: { baseSpeed: number; boostSpeed: number };
+  };
 
 // Frame-rate independent smoothing factor. `rate` is the fraction of the
 // remaining gap closed per second-ish; larger = snappier.
@@ -348,7 +317,9 @@ export function Galaxy(): JSX.Element {
     const initPromise = renderer.init();
 
     // ---- Lighting for the ship ----
-    const ambient = new THREE.AmbientLight(0x8899bb, 1.1);
+    // Subtle ambient floor so the hull never fully fades into the black
+    // background even when no directional light faces it.
+    const ambient = new THREE.AmbientLight(0xffffff, 0.1);
     scene.add(ambient);
     const keyLight = new THREE.DirectionalLight(0xffffff, 2.2);
     keyLight.position.set(3, 5, 2);
@@ -361,43 +332,42 @@ export function Galaxy(): JSX.Element {
     const ship = createSpaceship();
     scene.add(ship.root);
 
-    // ---- Hover/density buffers ----
-    const hoverW = (): number =>
-      Math.max(1, Math.floor(container.clientWidth * dpr * HOVER_DPR));
-    const hoverH = (): number =>
-      Math.max(1, Math.floor(container.clientHeight * dpr * HOVER_DPR));
-    const densityRTOptions = {
-      type: THREE.HalfFloatType,
-      format: THREE.RedFormat,
-      depthBuffer: false,
-      colorSpace: THREE.NoColorSpace,
-    } as const;
-    const velocityRTOptions = {
-      type: THREE.HalfFloatType,
-      format: THREE.RGFormat,
-      depthBuffer: false,
-      colorSpace: THREE.NoColorSpace,
-    } as const;
-    const densityRT = new THREE.RenderTarget(
-      hoverW(),
-      hoverH(),
-      densityRTOptions,
+    // ---- Earth (background scene, infinitely distant) ----
+    // A simple sphere lit by a fake directional "sun" computed entirely in the
+    // node material: dot(surfaceNormal, sunDir) drives a smooth day↔night
+    // crossfade between the two equirectangular textures. It lives in the stars
+    // scene so, like the stars, it never parallaxes as the ship flies — it just
+    // hangs in the sky. We push it far out along the sphere and scale it up so
+    // it reads as a distant planet rather than something you can fly to.
+    const texLoader = new THREE.TextureLoader();
+    const earthDayTex = texLoader.load('/textures/earth_day.jpg');
+    const earthNightTex = texLoader.load('/textures/earth_night.jpg');
+    earthDayTex.colorSpace = THREE.SRGBColorSpace;
+    earthNightTex.colorSpace = THREE.SRGBColorSpace;
+    earthDayTex.anisotropy = 8;
+    earthNightTex.anisotropy = 8;
+
+    const earthMat = new THREE.MeshBasicNodeMaterial();
+    {
+      // Direction to the "sun" in world space. Normalized in TSL.
+      const sunDir = vec3(0.6, 0.25, 0.5).normalize();
+      const dayColor = tslTexture(earthDayTex, uv());
+      const nightColor = tslTexture(earthNightTex, uv());
+      // Lambert term: 1 on the lit hemisphere, <0 on the dark side. Remap with
+      // a soft smoothstep around the terminator for a gentle day/night seam.
+      const ndl = dot(normalWorld, sunDir);
+      const dayAmount = smoothstep(float(-0.15), float(0.25), ndl);
+      earthMat.colorNode = vec4(
+        mix(nightColor.rgb, dayColor.rgb, dayAmount),
+        1,
+      );
+    }
+    const earth = new THREE.Mesh(
+      new THREE.SphereGeometry(40, 64, 48),
+      earthMat,
     );
-    const densityCopy = new THREE.RenderTarget(
-      hoverW(),
-      hoverH(),
-      densityRTOptions,
-    );
-    const velocityRT = new THREE.RenderTarget(
-      hoverW(),
-      hoverH(),
-      velocityRTOptions,
-    );
-    const velocityCopy = new THREE.RenderTarget(
-      hoverW(),
-      hoverH(),
-      velocityRTOptions,
-    );
+    earth.position.set(-90, 35, -160);
+    starsScene.add(earth);
 
     // Shared resolution uniform (device pixels). Updated on resize.
     const fullW = (): number => Math.floor(container.clientWidth * dpr);
@@ -406,10 +376,6 @@ export function Galaxy(): JSX.Element {
     const halfH = (): number => Math.max(1, Math.floor(fullH() / 2));
     resolution.value.set(fullW(), fullH());
     halfFovTan.value = Math.tan((camera.fov * Math.PI) / 180 / 2);
-    hoverAspect.value =
-      container.clientHeight > 0
-        ? container.clientWidth / container.clientHeight
-        : 1;
 
     // ---- Sky stars — instanced billboard quads ----
     const params: SkyParams = { ...DEFAULT_PARAMS };
@@ -545,18 +511,12 @@ export function Galaxy(): JSX.Element {
       effectiveTwinkleStrength.mul(twinkle01.oneMinus()),
     );
 
-    // Per-star multiplier driven by fieldStrength. instFlag=0 (field) →
+    // Per-star multiplier driven by fieldStrength. instFlag=0 (field) ���
     // fieldStrength; instFlag=1 (band) → 1.0. Leaves band brightness alone.
     const fieldMul = mix(fieldStrength, float(1), instFlag);
 
-    // ---- Hover density boost (vertex-stage sample) ----
-    const ndcXY = projectedClip.xy.div(projectedClip.w);
-    const hoverScreenUV = ndcXY.mul(0.5).add(0.5);
-    const hoverDensity = tslTexture(densityRT.texture, hoverScreenUV).r;
-    const hoverMul = float(1).add(hoverDensity.mul(hoverStrength));
-
     const brightnessVarying = varying(
-      clusterMul.mul(clusterMul2).mul(twinkleMul).mul(fieldMul).mul(hoverMul),
+      clusterMul.mul(clusterMul2).mul(twinkleMul).mul(fieldMul),
     );
 
     // ---- Radial gradient fragment (additive), modulated by cluster mask ----
@@ -572,14 +532,12 @@ export function Galaxy(): JSX.Element {
     starsScene.add(sky);
 
     // Publish handles for the debug useEffect.
-    const hoverDebug: { mode: DebugView } = { mode: 'off' };
     const flight = { baseSpeed: 9, boostSpeed: 26 };
     sceneRef.current = {
       camera,
       sky,
       params,
       regenerateSky,
-      hoverDebug,
       flight,
     };
 
@@ -698,121 +656,6 @@ export function Galaxy(): JSX.Element {
     let revealStart: number | null = null;
     let renderedFrames = 0;
 
-    // ---- Hover update materials ----
-    const densityCopyMat = new THREE.NodeMaterial();
-    densityCopyMat.fragmentNode = vec4(
-      tslTexture(densityRT.texture, uv()).r,
-      0,
-      0,
-      1,
-    );
-    densityCopyMat.toneMapped = false;
-
-    const velocityCopyMat = new THREE.NodeMaterial();
-    velocityCopyMat.fragmentNode = vec4(
-      tslTexture(velocityRT.texture, uv()).rg,
-      0,
-      1,
-    );
-    velocityCopyMat.toneMapped = false;
-
-    const splatDelta = uv().sub(mousePos);
-    const splatDeltaSquare = vec2(splatDelta.x.mul(hoverAspect), splatDelta.y);
-    const splatGaussian = length(splatDeltaSquare)
-      .div(splatRadius)
-      .pow(2)
-      .negate();
-
-    const velocityUpdateMat = new THREE.NodeMaterial();
-    velocityUpdateMat.toneMapped = false;
-    {
-      const velAtUV = tslTexture(velocityCopy.texture, uv()).rg;
-      const advectionUV = uv().sub(velAtUV.mul(advectionStrength));
-      const advectedVel = tslTexture(velocityCopy.texture, advectionUV).rg;
-      const decayedVel = advectedVel.mul(velocityDecay);
-      const g = exp(splatGaussian);
-      const velSplat = mouseVel.mul(velocitySplatStrength).mul(g);
-      velocityUpdateMat.fragmentNode = vec4(decayedVel.add(velSplat), 0, 1);
-    }
-
-    const densityUpdateMat = new THREE.NodeMaterial();
-    densityUpdateMat.toneMapped = false;
-    {
-      const velAtUV = tslTexture(velocityCopy.texture, uv()).rg;
-      const advectionUV = uv().sub(velAtUV.mul(advectionStrength));
-      const advectedDensity = tslTexture(densityCopy.texture, advectionUV).r;
-      const decayedDensity = advectedDensity.mul(densityDecay);
-      const g = exp(splatGaussian);
-      const motionAmount = length(mouseVel);
-      const splatContrib = g.mul(splatStrength).mul(motionAmount);
-      densityUpdateMat.fragmentNode = vec4(
-        decayedDensity.add(splatContrib),
-        0,
-        0,
-        1,
-      );
-    }
-
-    const densityCopyQuad = new THREE.QuadMesh(densityCopyMat);
-    const densityUpdateQuad = new THREE.QuadMesh(densityUpdateMat);
-    const velocityCopyQuad = new THREE.QuadMesh(velocityCopyMat);
-    const velocityUpdateQuad = new THREE.QuadMesh(velocityUpdateMat);
-
-    // Debug visualization quads — one per hover RT.
-    const debugMats: THREE.NodeMaterial[] = [];
-    const makeDensityDebugQuad = (rt: THREE.RenderTarget): THREE.QuadMesh => {
-      const mat = new THREE.NodeMaterial();
-      const d = tslTexture(rt.texture, uv()).r.clamp(0, 1);
-      mat.colorNode = vec4(d, d, d, 1);
-      debugMats.push(mat);
-      return new THREE.QuadMesh(mat);
-    };
-    const makeVelocityDebugQuad = (rt: THREE.RenderTarget): THREE.QuadMesh => {
-      const mat = new THREE.NodeMaterial();
-      const v = tslTexture(rt.texture, uv()).rg.mul(0.5).add(0.5).clamp(0, 1);
-      mat.colorNode = vec4(v.x, v.y, 0.5, 1);
-      debugMats.push(mat);
-      return new THREE.QuadMesh(mat);
-    };
-    const debugQuads = {
-      density: makeDensityDebugQuad(densityRT),
-      densityCopy: makeDensityDebugQuad(densityCopy),
-      velocity: makeVelocityDebugQuad(velocityRT),
-      velocityCopy: makeVelocityDebugQuad(velocityCopy),
-    };
-
-    // Clear all four hover RTs to black once after the renderer is ready.
-    const clearMat = new THREE.NodeMaterial();
-    clearMat.colorNode = vec4(0, 0, 0, 1);
-    clearMat.toneMapped = false;
-    const clearQuad = new THREE.QuadMesh(clearMat);
-    let hoverCleared = false;
-    const clearHoverBuffers = (): void => {
-      if (hoverCleared) return;
-      for (const rt of [densityRT, densityCopy, velocityRT, velocityCopy]) {
-        renderer.setRenderTarget(rt);
-        clearQuad.render(renderer);
-      }
-      hoverCleared = true;
-    };
-
-    // ---- Mouse tracking for hover splat ----
-    const pendingMouseDelta = { x: 0, y: 0 };
-    let lastMouseUV: { x: number; y: number } | null = null;
-    const handleMouseMove = (event: MouseEvent): void => {
-      const rect = container.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return;
-      const u = (event.clientX - rect.left) / rect.width;
-      const v = 1 - (event.clientY - rect.top) / rect.height;
-      if (lastMouseUV) {
-        pendingMouseDelta.x += u - lastMouseUV.x;
-        pendingMouseDelta.y += v - lastMouseUV.y;
-      }
-      mousePos.value.set(u, v);
-      lastMouseUV = { x: u, y: v };
-    };
-    window.addEventListener('mousemove', handleMouseMove, { passive: true });
-
     // ---- Keyboard flight controls ----
     // Arrow keys steer (auto-forward flight model): Up/Down pitch the nose,
     // Left/Right yaw. Space boosts. We swallow the default scroll behavior on
@@ -857,8 +700,9 @@ export function Galaxy(): JSX.Element {
     const PITCH_RATE = 0.9;
     let currentSpeed = flight.baseSpeed;
 
-    // Seed the chase camera behind the ship so frame 1 doesn't snap.
-    const camOffset = new THREE.Vector3(0, 1.5, 7);
+    // Seed the chase camera behind the ship so frame 1 doesn't snap. Pulled a
+    // little closer on Z and raised on Y so the ship's body reads more clearly.
+    const camOffset = new THREE.Vector3(0, 3.0, 4.3);
     const tmpVec = new THREE.Vector3();
     ship.root.updateMatrixWorld(true);
     camera.position.copy(ship.root.localToWorld(tmpVec.copy(camOffset)));
@@ -880,8 +724,9 @@ export function Galaxy(): JSX.Element {
       currentSpeed += (targetSpeed - currentSpeed) * damp(3, dt);
       ship.root.translateZ(-currentSpeed * dt);
 
-      // Visual bank — roll the model (not the heading) into the turn.
-      const targetRoll = -yaw * 0.5;
+      // Visual bank — roll the model (not the heading) into the turn. Steering
+      // left (yaw > 0) banks counter-clockwise about local Z.
+      const targetRoll = yaw * 0.5;
       ship.model.rotation.z +=
         (targetRoll - ship.model.rotation.z) * damp(6, dt);
 
@@ -935,20 +780,6 @@ export function Galaxy(): JSX.Element {
       // Advance the ship + cameras before any rendering.
       updateFlight(dt);
 
-      // Hover update — runs every frame before the scene renders.
-      clearHoverBuffers();
-      mouseVel.value.set(pendingMouseDelta.x, pendingMouseDelta.y);
-      pendingMouseDelta.x = 0;
-      pendingMouseDelta.y = 0;
-      renderer.setRenderTarget(velocityCopy);
-      velocityCopyQuad.render(renderer);
-      renderer.setRenderTarget(velocityRT);
-      velocityUpdateQuad.render(renderer);
-      renderer.setRenderTarget(densityCopy);
-      densityCopyQuad.render(renderer);
-      renderer.setRenderTarget(densityRT);
-      densityUpdateQuad.render(renderer);
-
       // Stars → background FBO, rendered from the origin-locked stars camera.
       renderer.setRenderTarget(starsRT);
       renderer.render(starsScene, starsCamera);
@@ -970,11 +801,7 @@ export function Galaxy(): JSX.Element {
       postQuads.blurVQuad.render(renderer);
 
       renderer.setRenderTarget(null);
-      if (hoverDebug.mode === 'off') {
-        postQuads.composeQuad.render(renderer);
-      } else {
-        debugQuads[hoverDebug.mode].render(renderer);
-      }
+      postQuads.composeQuad.render(renderer);
 
       requestAnimationFrame(animate);
     };
@@ -1046,7 +873,6 @@ export function Galaxy(): JSX.Element {
       camera.updateProjectionMatrix();
       starsCamera.aspect = w / h;
       starsCamera.updateProjectionMatrix();
-      hoverAspect.value = h > 0 ? w / h : 1;
       renderer.setSize(w, h);
       starsRT.setSize(fullW(), fullH());
       sceneRT.setSize(fullW(), fullH());
@@ -1054,11 +880,6 @@ export function Galaxy(): JSX.Element {
       brightRT.setSize(halfW(), halfH());
       blurHRT.setSize(halfW(), halfH());
       blurVRT.setSize(halfW(), halfH());
-      densityRT.setSize(hoverW(), hoverH());
-      densityCopy.setSize(hoverW(), hoverH());
-      velocityRT.setSize(hoverW(), hoverH());
-      velocityCopy.setSize(hoverW(), hoverH());
-      hoverCleared = false;
       texelH.value.set(1 / halfW(), 0);
       texelV.value.set(0, 1 / halfH());
       resolution.value.set(fullW(), fullH());
@@ -1069,20 +890,17 @@ export function Galaxy(): JSX.Element {
       running = false;
       sceneRef.current = null;
       window.removeEventListener('resize', handleResize);
-      window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
       geometry.dispose();
       material.dispose();
       ship.dispose();
+      earth.geometry.dispose();
+      earthMat.dispose();
+      earthDayTex.dispose();
+      earthNightTex.dispose();
       ditherMat.dispose();
       bayerTexture.dispose();
-      densityCopyMat.dispose();
-      densityUpdateMat.dispose();
-      velocityCopyMat.dispose();
-      velocityUpdateMat.dispose();
-      clearMat.dispose();
-      for (const m of debugMats) m.dispose();
       postMats?.brightMat.dispose();
       postMats?.blurHMat.dispose();
       postMats?.blurVMat.dispose();
@@ -1093,10 +911,6 @@ export function Galaxy(): JSX.Element {
       brightRT.dispose();
       blurHRT.dispose();
       blurVRT.dispose();
-      densityRT.dispose();
-      densityCopy.dispose();
-      velocityRT.dispose();
-      velocityCopy.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === container) {
         container.removeChild(renderer.domElement);
@@ -1161,38 +975,6 @@ export function Galaxy(): JSX.Element {
 
       const scene = sceneRef.current;
       if (!scene) return;
-
-      const hoverFolder = gui.addFolder('hover');
-      hoverFolder
-        .add(scene.hoverDebug, 'mode', [
-          'off',
-          'density',
-          'densityCopy',
-          'velocity',
-          'velocityCopy',
-        ])
-        .name('debug view');
-      hoverFolder
-        .add(splatRadius, 'value', 0.01, 0.5, 0.005)
-        .name('splat radius');
-      hoverFolder
-        .add(splatStrength, 'value', 0, 200, 0.5)
-        .name('splat strength');
-      hoverFolder
-        .add(densityDecay, 'value', 0.5, 0.999, 0.001)
-        .name('density decay');
-      hoverFolder
-        .add(velocitySplatStrength, 'value', 0, 16, 0.05)
-        .name('vel splat str');
-      hoverFolder
-        .add(velocityDecay, 'value', 0.9, 1, 0.001)
-        .name('velocity decay');
-      hoverFolder
-        .add(advectionStrength, 'value', 0, 0.5, 0.001)
-        .name('advection str');
-      hoverFolder
-        .add(hoverStrength, 'value', 0, 16, 0.1)
-        .name('hover strength');
 
       const flightFolder = gui.addFolder('flight');
       flightFolder
